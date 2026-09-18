@@ -41,10 +41,107 @@ export function writeDshState(dshes: DshEntry[], activeDshId?: string): void {
   saveSettings({ ...loadSettings(), dshes, activeDshId })
 }
 
+/**
+ * Reorder the registered dsh list to match `ids`.
+ *
+ * `ids` must name EXACTLY the registered set: a partial list would silently
+ * drop entries, an unknown id would inject one, and a duplicate would both drop
+ * and duplicate. Any mismatch is refused rather than partially applied.
+ * Returns false when the order was rejected (nothing written).
+ */
+export function reorderDshes(ids: readonly string[]): boolean {
+  const { dshes, activeDshId } = readDshState()
+  if (ids.length !== dshes.length) return false
+  const byId = new Map(dshes.map(d => [d.id, d]))
+  const next: DshEntry[] = []
+  for (const id of ids) {
+    const entry = byId.get(id)
+    if (entry === undefined) return false
+    next.push(entry)
+    byId.delete(id)
+  }
+  if (byId.size > 0) return false
+  writeDshState(next, activeDshId)
+  return true
+}
+
 /** The active dsh entry, or `undefined` when none is selected. */
 export function activeDshEntry(): DshEntry | undefined {
   const { dshes, activeDshId } = readDshState()
   return dshes.find(d => d.id === activeDshId)
+}
+
+// ── profile selection ───────────────────────────────────────────────────────
+
+/**
+ * The profile marked as current for the active dsh, or `undefined`.
+ *
+ * Stored per dsh (`Record<dshId, name>`) so each install remembers its own
+ * choice — switching dsh swaps the profile view without clobbering the last
+ * selection. A name whose profile no longer exists is treated as unset rather
+ * than returned stale.
+ */
+export function activeProfile(): string | undefined {
+  const s = loadSettings()
+  const dshId = s.activeDshId
+  if (dshId === undefined) return undefined
+  const name = s.activeProfiles?.[dshId]
+  return typeof name === 'string' && name.trim() !== '' ? name : undefined
+}
+
+/** Mark a profile as current for the active dsh. Pass `undefined` to clear. */
+export function setActiveProfile(name: string | undefined): void {
+  const s = loadSettings()
+  const dshId = s.activeDshId
+  if (dshId === undefined) return
+  const next = { ...(s.activeProfiles ?? {}) }
+  if (name === undefined || name.trim() === '') delete next[dshId]
+  else next[dshId] = name
+  saveSettings({ ...s, activeProfiles: next })
+}
+
+// ── profile display order ───────────────────────────────────────────────────
+
+/** The user-chosen profile order for the active dsh (may be empty). */
+export function profileOrder(): string[] {
+  const s = loadSettings()
+  const dshId = s.activeDshId
+  if (dshId === undefined) return []
+  const order = s.profileOrder?.[dshId]
+  return Array.isArray(order) ? order : []
+}
+
+/**
+ * Sort `names` into the user's saved order, appending anything not listed
+ * alphabetically — so a newly created profile shows up predictably even though
+ * it is not in the saved order yet.
+ */
+export function applyProfileOrder(names: readonly string[]): string[] {
+  const saved = profileOrder()
+  const rank = new Map(saved.map((name, i) => [name, i]))
+  return [...names].sort((a, b) => {
+    const ra = rank.get(a)
+    const rb = rank.get(b)
+    if (ra !== undefined && rb !== undefined) return ra - rb
+    if (ra !== undefined) return -1
+    if (rb !== undefined) return 1
+    return a.localeCompare(b)
+  })
+}
+
+/**
+ * Persist a profile order for the active dsh.
+ *
+ * Nothing is validated against the profile list here: profiles come and go
+ * (create / delete / trash), so the saved order is a PREFERENCE that
+ * {@link applyProfileOrder} reconciles on read. Requiring it to match exactly
+ * would silently drop the order every time a profile was added or removed.
+ */
+export function setProfileOrder(names: readonly string[]): void {
+  const s = loadSettings()
+  const dshId = s.activeDshId
+  if (dshId === undefined) return
+  saveSettings({ ...s, profileOrder: { ...(s.profileOrder ?? {}), [dshId]: [...names] } })
 }
 
 /** The configured profiles dir for a dsh: its override, else `<home>/profiles`. */

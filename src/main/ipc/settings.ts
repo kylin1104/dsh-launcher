@@ -1,10 +1,10 @@
 /** IPC for app-level UI preferences + the first-run onboarding wizard
  * (`settings:*`). */
 
-import { app, dialog } from 'electron'
+import { app, dialog, shell } from 'electron'
 import { askOnCloseEnabled, closeToTrayEnabled, loadSettings, saveSettings } from '../core/settings.ts'
 import { dshVersionDir, pluginDir, readDshState, shouldRunOnboarding } from '../core/appState.ts'
-import { failFromError } from '../core/errors.ts'
+import { fail, failFromError, E } from '../core/errors.ts'
 import { handle } from './handle.ts'
 import { checkHealth } from '../core/health.ts'
 import { checkAppUpdate } from '../core/github-updates.ts'
@@ -110,6 +110,19 @@ export function registerSettingsIpc(): void {
         properties: ['openDirectory', 'createDirectory'],
       })
       return { ok: true, value: picked.canceled ? '' : picked.filePaths[0] ?? '' }
+    } catch (error) {
+      return failFromError(error)
+    }
+  })
+
+  /** Open a configured directory in the OS file manager. The path is resolved
+   * HERE from the kind, never taken from the renderer — a compromised renderer
+   * cannot turn this into an arbitrary-folder open. */
+  handle('settings:revealDir', async (_event, kind: 'version' | 'plugin'): Promise<IpcResult<boolean>> => {
+    try {
+      const dir = kind === 'version' ? dshVersionDir() : pluginDir()
+      const error = await shell.openPath(dir)
+      return error === '' ? { ok: true, value: true } : fail(E.shellOpenPath, { detail: error })
     } catch (error) {
       return failFromError(error)
     }

@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import AdmZip from 'adm-zip'
-import { addDirToZip, dedentRowBlock, inlineRelativeImages, verifyDisabledState } from './app-util.ts'
+import { addDirToZip, dedentRowBlock, inlineRelativeImages, isValidPatchDocument, verifyDisabledState } from './app-util.ts'
 
 let root: string
 let assetDir: string
@@ -33,6 +33,31 @@ describe('verifyDisabledState', () => {
     expect(verifyDisabledState('[]\n', 'a.b', false)).toBe(true)
     expect(verifyDisabledState('- id: a.b\n  disabled: false\n', 'a.b', false)).toBe(true)
     expect(verifyDisabledState('- id: a.b\n  disabled: true\n', 'a.b', false)).toBe(false)
+  })
+
+  it('reads the row own disabled: past a nested lookalike', () => {
+    const text = '- id: a.b\n  config:\n    opts:\n      disabled: false\n  disabled: true\n'
+    expect(verifyDisabledState(text, 'a.b', true)).toBe(true)
+  })
+})
+
+describe('isValidPatchDocument', () => {
+  it('accepts what dsh can boot from', () => {
+    expect(isValidPatchDocument('[]\n')).toBe(true)
+    expect(isValidPatchDocument('- id: a\n  disabled: true\n')).toBe(true)
+    expect(isValidPatchDocument('')).toBe(true)
+  })
+
+  it('rejects a document dsh would fail loud on', () => {
+    // A top-level mapping is not an array.
+    expect(isValidPatchDocument('insert:\n  - id: a\n')).toBe(false)
+    // A duplicate key is a parse error.
+    expect(isValidPatchDocument('- id: a\n  disabled: true\n  disabled: true\n')).toBe(false)
+    // Unbalanced quoting.
+    expect(isValidPatchDocument('- id: "a\n')).toBe(false)
+    // Comments only: verified against real dsh, which rejects this at boot with
+    // "must be a top-level YAML array of loader patch entries".
+    expect(isValidPatchDocument('# only a comment\n')).toBe(false)
   })
 })
 

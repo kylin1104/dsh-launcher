@@ -22,6 +22,11 @@ import type {
   MarketPage,
   MarketPlugin,
   MarketSourceState,
+  McpAddInput,
+  McpImportPreview,
+  McpLayer,
+  McpScanResult,
+  McpToggleTarget,
   NodeEnvironment,
   NpmSearchHit,
   OnboardingPayload,
@@ -32,7 +37,10 @@ import type {
   ProfileLayer,
   ProfileSummary,
   RowCreateInput,
+  RuleFile,
   RunEvent,
+  SkillScanResult,
+  SkillSource,
   TrashItem,
 } from '../shared/types.ts'
 import type { WindowApi } from '../shared/api.ts'
@@ -45,6 +53,11 @@ const api = {
     ipcRenderer.invoke('profile:setDisabled', name, id, disabled),
 
   listProfileSummaries: (): Promise<IpcResult<ProfileSummary[]>> => ipcRenderer.invoke('profile:summaries'),
+  getActiveProfile: (): Promise<IpcResult<string | null>> => ipcRenderer.invoke('profile:getActive'),
+  setActiveProfile: (name: string | null): Promise<IpcResult<boolean>> =>
+    ipcRenderer.invoke('profile:setActive', name),
+  reorderProfiles: (names: string[]): Promise<IpcResult<boolean>> =>
+    ipcRenderer.invoke('profile:reorder', names),
   createProfile: (name: string, template?: string): Promise<IpcResult<boolean>> =>
     ipcRenderer.invoke('profile:create', name, template),
   cloneProfile: (name: string, newName: string): Promise<IpcResult<boolean>> =>
@@ -164,6 +177,14 @@ const api = {
       ipcRenderer.on('download:change', listener)
       return () => ipcRenderer.removeListener('download:change', listener)
     },
+    /** One-shot signal when a session reaches a terminal state. The live list
+     * above never contains a finished session, so this is the only way to react
+     * to a background install landing. */
+    onFinished: (fn: (session: DownloadSessionInfo) => void): (() => void) => {
+      const listener = (_e: unknown, session: DownloadSessionInfo): void => fn(session)
+      ipcRenderer.on('download:finished', listener)
+      return () => ipcRenderer.removeListener('download:finished', listener)
+    },
   },
 
   market: {
@@ -184,6 +205,8 @@ const api = {
       ipcRenderer.invoke('settings:getOnboardingState'),
     pickDir: (opts?: { title?: string; defaultPath?: string }): Promise<IpcResult<string>> =>
       ipcRenderer.invoke('settings:pickDir', opts),
+    revealDir: (kind: 'version' | 'plugin'): Promise<IpcResult<boolean>> =>
+      ipcRenderer.invoke('settings:revealDir', kind),
     completeOnboarding: (payload: OnboardingPayload): Promise<IpcResult<boolean>> =>
       ipcRenderer.invoke('settings:completeOnboarding', payload),
     checkHealth: (): Promise<IpcResult<HealthIssue[]>> =>
@@ -222,6 +245,8 @@ const api = {
       ipcRenderer.invoke('dsh:remove', id, opts),
     setActive: (id: string): Promise<IpcResult<boolean>> =>
       ipcRenderer.invoke('dsh:setActive', id),
+    reorder: (ids: string[]): Promise<IpcResult<boolean>> =>
+      ipcRenderer.invoke('dsh:reorder', ids),
     setHome: (id: string, home: string): Promise<IpcResult<boolean>> =>
       ipcRenderer.invoke('dsh:setHome', id, home),
     setProfileDir: (id: string, dir: string): Promise<IpcResult<boolean>> =>
@@ -241,6 +266,10 @@ const api = {
       ipcRenderer.invoke('dsh:rename', id, name),
     revealDir: (id: string): Promise<IpcResult<boolean>> =>
       ipcRenderer.invoke('dsh:revealDir', id),
+    revealHome: (id: string): Promise<IpcResult<boolean>> =>
+      ipcRenderer.invoke('dsh:revealHome', id),
+    revealProfiles: (id: string): Promise<IpcResult<boolean>> =>
+      ipcRenderer.invoke('dsh:revealProfiles', id),
     checkUpdate: (id: string): Promise<IpcResult<DshUpdateInfo | null>> =>
       ipcRenderer.invoke('dsh:checkUpdate', id),
     update: (id: string, opts?: { version?: string; ackMajorRisk?: boolean }): Promise<IpcResult<{ id: string }>> =>
@@ -290,6 +319,37 @@ const api = {
   app: {
     version: (): Promise<IpcResult<string>> => ipcRenderer.invoke('app:version'),
     checkUpdate: (): Promise<IpcResult<AppUpdateInfo>> => ipcRenderer.invoke('app:checkUpdate'),
+  },
+
+  mcp: {
+    scan: (): Promise<IpcResult<McpScanResult>> => ipcRenderer.invoke('mcp:scan'),
+    setDisabled: (target: McpToggleTarget, disabled: boolean): Promise<IpcResult<boolean>> =>
+      ipcRenderer.invoke('mcp:setDisabled', target, disabled),
+    ensureHomePatch: (): Promise<IpcResult<string>> => ipcRenderer.invoke('mcp:ensureHomePatch'),
+    openPatchFile: (layer: McpLayer, profile?: string): Promise<IpcResult<boolean>> =>
+      ipcRenderer.invoke('mcp:openPatchFile', layer, profile),
+    revealPatchFile: (layer: McpLayer, profile?: string): Promise<IpcResult<boolean>> =>
+      ipcRenderer.invoke('mcp:revealPatchFile', layer, profile),
+    add: (input: McpAddInput): Promise<IpcResult<string>> => ipcRenderer.invoke('mcp:add', input),
+    parseClaude: (text: string, layer: McpLayer, profile?: string): Promise<IpcResult<McpImportPreview>> =>
+      ipcRenderer.invoke('mcp:parseClaude', text, layer, profile),
+    import: (servers: McpAddInput[]): Promise<IpcResult<string[]>> => ipcRenderer.invoke('mcp:import', servers),
+  },
+
+  skill: {
+    scan: (): Promise<IpcResult<SkillScanResult>> => ipcRenderer.invoke('skill:scan'),
+    read: (name: string, source: SkillSource, rank: number): Promise<IpcResult<{ content: string; file: string }>> =>
+      ipcRenderer.invoke('skill:read', name, source, rank),
+    openDir: (name: string, source: SkillSource, rank: number): Promise<IpcResult<boolean>> =>
+      ipcRenderer.invoke('skill:openDir', name, source, rank),
+    openRoot: (path: string): Promise<IpcResult<boolean>> => ipcRenderer.invoke('skill:openRoot', path),
+  },
+
+  rule: {
+    read: (): Promise<IpcResult<{ file: RuleFile; content: string }>> => ipcRenderer.invoke('rule:read'),
+    write: (content: string): Promise<IpcResult<RuleFile>> => ipcRenderer.invoke('rule:write', content),
+    reveal: (): Promise<IpcResult<boolean>> => ipcRenderer.invoke('rule:reveal'),
+    openFile: (): Promise<IpcResult<boolean>> => ipcRenderer.invoke('rule:openFile'),
   },
 } satisfies WindowApi
 

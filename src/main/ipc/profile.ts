@@ -5,7 +5,7 @@ import { app, dialog, shell } from 'electron'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import AdmZip from 'adm-zip'
-import yaml from 'js-yaml'
+import { load as loadYaml, FAILSAFE_SCHEMA } from 'js-yaml'
 import { listProfiles, profileDir } from '../core/home.ts'
 import { readManifest } from '../core/manifest.ts'
 import {
@@ -18,7 +18,7 @@ import {
   cloneProfile, createProfile, exportProfile, importProfile, listLocalBundles, listProfileSummaries,
   mirrorProfile, PROFILE_TEMPLATES, removeBundle, reorderBundle, softDeleteProfile, type ProfileSummary,
 } from '../core/profile.ts'
-import { contextForEntry, pluginDir, readDshState } from '../core/appState.ts'
+import { activeProfile, contextForEntry, pluginDir, readDshState, setActiveProfile, setProfileOrder } from '../core/appState.ts'
 import { addDirToZip, dedentRowBlock, verifyDisabledState } from '../core/app-util.ts'
 import { fail, E } from '../core/errors.ts'
 import { handle } from './handle.ts'
@@ -32,7 +32,7 @@ import type {
 function assertConfigValid(configText: string): void {
   let parsed: unknown
   try {
-    parsed = yaml.load(configText, { schema: yaml.FAILSAFE_SCHEMA })
+    parsed = loadYaml(configText, { schema: FAILSAFE_SCHEMA })
   } catch (error) {
     throw new Error(`config 不是合法 YAML：${String(error instanceof Error ? error.message : error)}`)
   }
@@ -44,7 +44,7 @@ function assertConfigValid(configText: string): void {
 /** Validate an insert list reads as a YAML sequence. */
 function assertInsertValid(items: string[]): void {
   try {
-    yaml.load(items.map(item => `- ${item}`).join('\n'), { schema: yaml.FAILSAFE_SCHEMA })
+    loadYaml(items.map(item => `- ${item}`).join('\n'), { schema: FAILSAFE_SCHEMA })
   } catch (error) {
     throw new Error(`insert 不是合法 YAML 列表：${String(error instanceof Error ? error.message : error)}`)
   }
@@ -58,7 +58,7 @@ function assertPatchDocValid(next: string): void {
   if (next.includes('!!js')) return
   let parsed: unknown
   try {
-    parsed = yaml.load(next, { schema: yaml.FAILSAFE_SCHEMA })
+    parsed = loadYaml(next, { schema: FAILSAFE_SCHEMA })
   } catch (error) {
     throw new Error(`生成的 patch 不是合法 YAML，已拒绝写入：${String(error instanceof Error ? error.message : error)}`)
   }
@@ -141,6 +141,37 @@ export function registerProfileIpc(): void {
   handle('profile:summaries', (): IpcResult<ProfileSummary[]> => ({
     ok: true, value: listProfileSummaries(),
   }))
+
+  /** The profile marked current for the active dsh (undefined when unset, or
+   * when the stored name no longer names a real profile). */
+  handle('profile:getActive', (): IpcResult<string | null> => {
+    const name = activeProfile()
+    if (name === undefined) return { ok: true, value: null }
+    // A stale name (profile deleted / switched dsh) is reported as unset rather
+    // than handed to the renderer for a profile that is not there.
+    return { ok: true, value: listProfiles().includes(name) ? name : null }
+  })
+
+  /** Mark a profile as current. `null` clears the selection. */
+  handle('profile:setActive', (_event, name: string | null): IpcResult<boolean> => {
+    if (name === null) {
+      setActiveProfile(undefined)
+      return { ok: true, value: true }
+    }
+    if (invalidName(name)) return fail(E.nameInvalid)
+    if (!listProfiles().includes(name)) return fail(E.profileNotFound, { name })
+    setActiveProfile(name)
+    return { ok: true, value: true }
+  })
+
+  /** Persist a user-chosen profile display order. Names are NOT validated
+   * against the profile list: the order is a preference reconciled on read, so
+   * it must survive profiles being created, deleted or moved to the trash. */
+  handle('profile:reorder', (_event, names: string[]): IpcResult<boolean> => {
+    if (!Array.isArray(names) || names.some(n => typeof n !== 'string')) return fail(E.nameInvalid)
+    setProfileOrder(names)
+    return { ok: true, value: true }
+  })
 
   handle('profile:create', (_event, name: string, template?: string): IpcResult<boolean> => {
     if (invalidName(name)) return fail(E.nameInvalid)

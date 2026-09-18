@@ -24,6 +24,11 @@ import type {
   MarketPage,
   MarketPlugin,
   MarketSourceState,
+  McpAddInput,
+  McpImportPreview,
+  McpLayer,
+  McpScanResult,
+  McpToggleTarget,
   NodeEnvironment,
   NpmSearchHit,
   OnboardingPayload,
@@ -34,7 +39,10 @@ import type {
   ProfileLayer,
   ProfileSummary,
   RowCreateInput,
+  RuleFile,
   RunEvent,
+  SkillScanResult,
+  SkillSource,
   TrashItem,
 } from './types.ts'
 
@@ -44,6 +52,12 @@ export interface WindowApi {
   setDisabled: (name: string, id: string, disabled: boolean) => Promise<IpcResult<boolean>>
 
   listProfileSummaries: () => Promise<IpcResult<ProfileSummary[]>>
+  /** The profile marked current for the active dsh (`null` when unset/stale). */
+  getActiveProfile: () => Promise<IpcResult<string | null>>
+  /** Mark a profile as current (`null` clears it). */
+  setActiveProfile: (name: string | null) => Promise<IpcResult<boolean>>
+  /** Persist a user-chosen profile display order (drag to reorder). */
+  reorderProfiles: (names: string[]) => Promise<IpcResult<boolean>>
   createProfile: (name: string, template?: string) => Promise<IpcResult<boolean>>
   cloneProfile: (name: string, newName: string) => Promise<IpcResult<boolean>>
   deleteProfile: (name: string) => Promise<IpcResult<boolean>>
@@ -116,8 +130,11 @@ export interface WindowApi {
     cancel: (id: string) => Promise<IpcResult<boolean>>
     cleanup: () => Promise<IpcResult<{ removed: string[] }>>
     /** Subscribe to live session-snapshot pushes from the main process. Returns
-     * an unsubscribe function. */
+     * an unsubscribe function. Carries LIVE sessions only. */
     onChange: (fn: (list: DownloadSessionInfo[]) => void) => () => void
+    /** Subscribe to the one-shot "session finished" signal. Returns an
+     * unsubscribe function. This is the only way to observe completion. */
+    onFinished: (fn: (session: DownloadSessionInfo) => void) => () => void
   }
 
   market: {
@@ -148,6 +165,9 @@ export interface WindowApi {
     setUiLanguage: (lng: string) => Promise<IpcResult<boolean>>
     getOnboardingState: () => Promise<IpcResult<OnboardingState>>
     pickDir: (opts?: { title?: string; defaultPath?: string }) => Promise<IpcResult<string>>
+    /** Open a configured directory (version repo / plugin store) in the file
+     * manager. The path is resolved in the main process, never passed in. */
+    revealDir: (kind: 'version' | 'plugin') => Promise<IpcResult<boolean>>
     completeOnboarding: (payload: OnboardingPayload) => Promise<IpcResult<boolean>>
     /** Disk-vs-app sync health: missing dsh executables / homes / store / plugins. */
     checkHealth: () => Promise<IpcResult<HealthIssue[]>>
@@ -197,6 +217,8 @@ export interface WindowApi {
     add: (path: string) => Promise<IpcResult<DshEntry>>
     remove: (id: string, opts?: { deleteFiles?: boolean }) => Promise<IpcResult<boolean>>
     setActive: (id: string) => Promise<IpcResult<boolean>>
+    /** Persist a user-chosen list order (drag to reorder). */
+    reorder: (ids: string[]) => Promise<IpcResult<boolean>>
     setHome: (id: string, home: string) => Promise<IpcResult<boolean>>
     setProfileDir: (id: string, dir: string) => Promise<IpcResult<boolean>>
     installOfficial: (options?: { versionDir?: string; name?: string; version?: string; force?: boolean }) => Promise<IpcResult<{ id: string }>>
@@ -208,6 +230,10 @@ export interface WindowApi {
     addManual: (alias: string, execPath: string) => Promise<IpcResult<DshEntry>>
     rename: (id: string, name: string) => Promise<IpcResult<boolean>>
     revealDir: (id: string) => Promise<IpcResult<boolean>>
+    /** Reveal a dsh's DATA home (sessions/profiles). */
+    revealHome: (id: string) => Promise<IpcResult<boolean>>
+    /** Reveal a dsh's effective profiles directory (override, else `<home>/profiles`). */
+    revealProfiles: (id: string) => Promise<IpcResult<boolean>>
     /** Whether a managed dsh has a newer release. `null` = up to date. */
     checkUpdate: (id: string) => Promise<IpcResult<DshUpdateInfo | null>>
     /** In-place update a managed dsh (cross-major needs `ackMajorRisk`). Returns the new session id. */
@@ -230,5 +256,47 @@ export interface WindowApi {
     version: () => Promise<IpcResult<string>>
     /** Whether a newer launcher release exists on GitHub. */
     checkUpdate: () => Promise<IpcResult<AppUpdateInfo>>
+  }
+
+  mcp: {
+    /** Every MCP server row across the layers the Launcher manages. */
+    scan: () => Promise<IpcResult<McpScanResult>>
+    /** Enable/disable one row in the layer it came from. */
+    setDisabled: (target: McpToggleTarget, disabled: boolean) => Promise<IpcResult<boolean>>
+    /** Create the home layer's patch file when absent. Idempotent. */
+    ensureHomePatch: () => Promise<IpcResult<string>>
+    /** Open a patch file in the OS default editor (path resolved by a scan). */
+    openPatchFile: (layer: McpLayer, profile?: string) => Promise<IpcResult<boolean>>
+    /** Reveal a patch file's folder in the OS file explorer. */
+    revealPatchFile: (layer: McpLayer, profile?: string) => Promise<IpcResult<boolean>>
+    /** Add one MCP server to a chosen layer. Returns the new row id. */
+    add: (input: McpAddInput) => Promise<IpcResult<string>>
+    /** Convert a Claude-format MCP config into dsh rows WITHOUT writing. */
+    parseClaude: (text: string, layer: McpLayer, profile?: string) => Promise<IpcResult<McpImportPreview>>
+    /** Write a batch of already-previewed servers. Returns the new row ids. */
+    import: (servers: McpAddInput[]) => Promise<IpcResult<string[]>>
+  }
+
+  skill: {
+    /** Every skill across every root dsh would scan (read-only). */
+    scan: () => Promise<IpcResult<SkillScanResult>>
+    /** Read one skill's body, resolved by name/source/rank (never a raw path). */
+    read: (name: string, source: SkillSource, rank: number) => Promise<IpcResult<{ content: string; file: string }>>
+    /** Open a skill's directory in the OS file explorer. */
+    openDir: (name: string, source: SkillSource, rank: number) => Promise<IpcResult<boolean>>
+    /** Open a scanned skill ROOT directory. */
+    openRoot: (path: string) => Promise<IpcResult<boolean>>
+  }
+
+  rule: {
+    /** The active dsh's global instruction file: state plus its text. The path is
+     * resolved in the main process, never passed in. */
+    read: () => Promise<IpcResult<{ file: RuleFile; content: string }>>
+    /** Save the file (rejected when empty or over dsh's per-file cap). */
+    write: (content: string) => Promise<IpcResult<RuleFile>>
+    /** Reveal the file in the OS file manager (the home dir when it is absent). */
+    reveal: () => Promise<IpcResult<boolean>>
+    /** Open the file ITSELF in the OS default editor. Fails when it does not exist. */
+    openFile: () => Promise<IpcResult<boolean>>
   }
 }

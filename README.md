@@ -25,6 +25,16 @@ Built with Electron, React and Ant Design.
   at once; an in-app download center tracks running/cancelled installs.
 - **Community market** — A curated catalog of dsh plugins with search / category
   / sort, plus one-click GitHub-source and npm-source installs.
+- **MCP servers** — List every `dsh-mcp-client` row across the patch layers the
+  launcher owns (profile + home, in dsh's own composition order), scoped to one
+  profile or all of them, and enable or disable a row in place — the write goes
+  back to the layer it came from. The row id is shown, since that is the key the
+  composition order overrides by; a row the home layer overrides is marked.
+  Open the backing patch file, or create the home layer when it does not exist.
+- **Skill browser** — Read-only view of every skill root dsh scans
+  (`.dsh`/`.agents`/preset/`$DSH_HOME`/`~/.agents`/bundled), including which
+  same-named skills are shadowed. Skills and roots open in the file explorer.
+  dsh has no skill enable/disable switch, so none is offered.
 - **Runtimes & updates** — Auto-discover installed dsh versions, pick one as
   active, and update an app-managed dsh in place (home auto-backed up;
   cross-major upgrades require confirmation).

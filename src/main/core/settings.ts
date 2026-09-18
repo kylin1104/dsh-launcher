@@ -24,6 +24,13 @@ export interface AppSettings {
   dshes?: DshEntry[]
   /** The currently selected dsh entry id. */
   activeDshId?: string
+  /** The profile the user marked as current (per active dsh, keyed by dsh id).
+   * `Record<dshId, profileName>`: each dsh keeps its own selection, so switching
+   * dsh swaps the whole profile view without losing the previous one. */
+  activeProfiles?: Record<string, string>
+  /** User-chosen profile display order (per dsh): `Record<dshId, profileName[]>`.
+   * Names not present here sort after the listed ones, alphabetically. */
+  profileOrder?: Record<string, string[]>
   /** Persisted UI language (`'zh'`/`'en'` …). */
   uiLanguage?: string
   /** Whether clicking close minimizes to the system tray instead of quitting.

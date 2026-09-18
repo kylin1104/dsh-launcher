@@ -65,8 +65,9 @@ export default function MarketSection(): JSX.Element {
     if (r.ok) setStoreMap(toStoreMap(r.value))
   }, [])
 
-  // Keep the in-store tag current as downloads settle (any session change).
-  useEffect(() => window.api.downloads.onChange(() => { void refreshStoreNames() }), [refreshStoreNames])
+  // Keep the in-store tag current as downloads settle (onFinished, since the
+  // live list only carries running sessions).
+  useEffect(() => window.api.downloads.onFinished(() => { void refreshStoreNames() }), [refreshStoreNames])
 
   // The one request path. Reads the current filter/page state (fresh via the
   // useCallback deps) and applies the query server-side; a stale response is

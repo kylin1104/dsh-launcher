@@ -6,7 +6,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { listProfiles, profileDir, profilesDir } from './home.ts'
-import { pluginDir, profilesRootFor, type DshContext } from './appState.ts'
+import { applyProfileOrder, pluginDir, profilesRootFor, type DshContext } from './appState.ts'
 import { readManifest } from './manifest.ts'
 import { listComboPlugins } from './combo.ts'
 import { parsePatchRows } from './patch.ts'
@@ -38,9 +38,9 @@ nodeLinker: hoisted
 autoInstallPeers: false
 `
 
-/** List profile summaries for the active dsh. */
+/** List profile summaries for the active dsh, in the user's saved order. */
 export function listProfileSummaries(): ProfileSummary[] {
-  return listProfiles().map((name) => {
+  const summaries = listProfiles().map((name) => {
     const manifest = readManifest(name)
     let plugins = 0
     try {
@@ -52,6 +52,9 @@ export function listProfileSummaries(): ProfileSummary[] {
     const patchText = existsSync(patchPath) ? readFileSync(patchPath, 'utf8') : ''
     return { name, bundles: manifest.bundles.length, plugins, patchRows: parsePatchRows(patchText).length }
   })
+  const ordered = applyProfileOrder(summaries.map(s => s.name))
+  const byName = new Map(summaries.map(s => [s.name, s]))
+  return ordered.map(name => byName.get(name)).filter((s): s is ProfileSummary => s !== undefined)
 }
 
 /** Official profile templates offered by the "create from template" dialog. */

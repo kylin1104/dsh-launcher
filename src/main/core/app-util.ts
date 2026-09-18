@@ -2,17 +2,65 @@
  * Pure helpers shared across the IPC layer — patch verification, row re-basing,
  * README image inlining and zip packing. No Electron or settings dependency.
  */
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type AdmZip from 'adm-zip'
-import { parsePatchRows } from './patch.ts'
+import { load as loadYaml } from 'js-yaml'
+import { effectiveRow } from './patch.ts'
+
+/**
+ * Write a patch file atomically (temp + rename), keeping the previous content as
+ * `<path>.bak`.
+ *
+ * These files are the user's live dsh config, and a plain `writeFileSync` can be
+ * interrupted (kill, disk full, antivirus/indexer lock) leaving a truncated file —
+ * which dsh then fails to boot from. The temp+rename dance mirrors
+ * `saveSettings`, including its Windows fallback: a transient lock on the target
+ * degrades to a direct write rather than losing the edit, with the backup already
+ * on disk.
+ */
+export function writePatchFileAtomic(path: string, content: string): void {
+  const tmp = `${path}.tmp`
+  try {
+    if (existsSync(path)) {
+      try { writeFileSync(`${path}.bak`, readFileSync(path)) } catch { /* a failed backup must not block the write */ }
+    }
+    writeFileSync(tmp, content)
+    renameSync(tmp, path)
+  } catch {
+    try { rmSync(tmp, { force: true }) } catch { /* ignore */ }
+    writeFileSync(path, content)
+  }
+}
+
+/**
+ * Whether a patch document is one dsh can boot from.
+ *
+ * dsh's `parsePatchList` requires a top-level YAML ARRAY (or an empty file, which
+ * it treats as no patches): anything else fails loud at boot. Every writer of a
+ * live `cordis.patch.yml` checks this BEFORE writing, so a bad edit is reported
+ * instead of leaving a file that stops the user's dsh from starting.
+ */
+export function isValidPatchDocument(text: string): boolean {
+  if (text.trim() === '') return true
+  try {
+    const parsed = loadYaml(text)
+    return parsed === undefined || parsed === null || Array.isArray(parsed)
+  } catch {
+    return false
+  }
+}
 
 /** Whether the on-disk patch reflects the requested disabled state. Enabling
  * (`disabled === false`) may legitimately have REMOVED the row entirely (a
  * disable-only override with nothing else reverts to the default = enabled), so
- * an absent row is success there; only disabling requires the row to exist. */
+ * an absent row is success there; only disabling requires the row to exist.
+ *
+ * Reads the EFFECTIVE row (the last block for the id, with omitted fields
+ * inherited) because that is what dsh resolves: another writer may have appended
+ * an override row after the one this code edited. */
 export function verifyDisabledState(after: string, id: string, disabled: boolean): boolean {
-  const row = parsePatchRows(after).find(candidate => candidate.id === id)
+  const row = effectiveRow(after, id)
   if (disabled) return row !== undefined && row.disabled === true
   return row === undefined || row.disabled === false
 }

@@ -34,6 +34,7 @@ interface DownloadSession {
 const active = new Map<string, DownloadSession>()
 let seq = 0
 let emit: ((list: DownloadSessionInfo[]) => void) | undefined
+let emitFinished: ((session: DownloadSessionInfo) => void) | undefined
 
 /** Register the listener that pushes session snapshots (the IPC layer wires this
  * to `webContents.send('download:change', …)`). */
@@ -41,14 +42,43 @@ export function onDownloadsChange(fn: (list: DownloadSessionInfo[]) => void): vo
   emit = fn
 }
 
+/**
+ * Register the listener that fires ONCE when a session reaches a terminal state.
+ *
+ * Separate from `onDownloadsChange` on purpose: that snapshot carries live
+ * sessions only (the download panel shows work in progress), so a completed
+ * session is never in it. Without this signal nothing can react to an install
+ * finishing — which is exactly the bug that left the DSH list stale after an
+ * official install.
+ */
+export function onDownloadFinished(fn: (session: DownloadSessionInfo) => void): void {
+  emitFinished = fn
+}
+
+function toInfo({ id, kind, name, source, detail, status, message, steps }: DownloadSession): DownloadSessionInfo {
+  return { id, kind, name, source, detail, status, message, steps }
+}
+
+/** Live sessions only — terminal ones are reported through `onDownloadFinished`. */
 function snapshot(): DownloadSessionInfo[] {
-  return [...active.values()].map(({ id, kind, name, source, detail, status, message, steps }) => ({
-    id, kind, name, source, detail, status, message, steps,
-  }))
+  return [...active.values()].map(toInfo)
 }
 
 function notify(): void {
   emit?.(snapshot())
+}
+
+/** Mark a session terminal: drop it from `active`, push the live-only snapshot,
+ * then fire the one-shot finished signal carrying the terminal session.
+ *
+ * The ORDER matters. Previously the session was deleted and then a snapshot was
+ * pushed — but a live-only snapshot can never contain a finished session, so no
+ * listener could observe the completion and nothing refreshed after a dsh
+ * install or a plugin download finished. */
+function settle(session: DownloadSession): void {
+  active.delete(session.id)
+  notify()
+  emitFinished?.(toInfo(session))
 }
 
 /** Current live download sessions (by insertion order). */
@@ -85,8 +115,7 @@ export function startPluginDownload(storeDir: string, source: string, name?: str
       session.status = 'failed'
       session.message = error instanceof Error ? error.message : String(error)
     } finally {
-      active.delete(id)
-      notify()
+      settle(session)
       logger.info(`plugin download ${session.name}: ${session.status}`)
     }
   })()
@@ -133,8 +162,7 @@ export function startDshDownload(
       session.status = 'failed'
       session.message = error instanceof Error ? error.message : String(error)
     } finally {
-      active.delete(id)
-      notify()
+      settle(session)
       logger.info(`dsh install ${session.name}: ${session.status}`)
     }
   })()

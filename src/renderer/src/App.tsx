@@ -1,8 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import { Alert, Button, ConfigProvider, Layout, message, Modal, Space, Spin, Tabs, theme, Typography } from 'antd'
 import {
-  AppstoreOutlined, CloseOutlined, FullscreenExitOutlined, FullscreenOutlined,
-  InfoOutlined, MinusOutlined, ProfileOutlined, RobotOutlined, SettingOutlined,
+  ApiOutlined, AppstoreOutlined, InfoOutlined, ProfileOutlined, RobotOutlined, SettingOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useAppLang } from './i18n'
@@ -18,9 +17,10 @@ const ProfileSection = lazy(() => import('./views/ProfileSection.tsx'))
 const PluginsSection = lazy(() => import('./views/PluginsSection.tsx'))
 const SettingsSection = lazy(() => import('./views/SettingsSection.tsx'))
 const DshSection = lazy(() => import('./views/DshSection.tsx'))
+const ExtensionsSection = lazy(() => import('./views/ExtensionsSection.tsx'))
 const AboutView = lazy(() => import('./views/AboutView.tsx'))
 
-type Tab = 'profile' | 'plugins' | 'settings' | 'dsh' | 'about'
+type Tab = 'profile' | 'plugins' | 'extensions' | 'settings' | 'dsh' | 'about'
 
 const { Content } = Layout
 
@@ -119,6 +119,7 @@ export default function App() {
     { key: 'dsh', label: t('app.tab.dsh'), icon: <RobotOutlined /> },
     { key: 'profile', label: t('app.tab.profile'), icon: <ProfileOutlined /> },
     { key: 'plugins', label: t('app.tab.plugins'), icon: <AppstoreOutlined /> },
+    { key: 'extensions', label: t('app.tab.extensions'), icon: <ApiOutlined /> },
     { key: 'settings', label: t('app.tab.settings'), icon: <SettingOutlined /> },
     { key: 'about', label: t('app.tab.about'), icon: <InfoOutlined /> },
   ]
@@ -203,6 +204,7 @@ export default function App() {
         )}>
           {tab === 'profile' && <ProfileSection />}
           {tab === 'plugins' && <PluginsSection key={pluginsEpoch} />}
+          {tab === 'extensions' && <ExtensionsSection />}
           {tab === 'settings' && <SettingsSection />}
           {tab === 'dsh' && <DshSection />}
           {tab === 'about' && <AboutView />}
@@ -284,18 +286,52 @@ function WindowButton(props: {
   )
 }
 
+/**
+ * Windows-standard window-control glyphs, drawn as SVG rather than taken from
+ * an icon set: the OS uses a 10x10 thin-stroke square (and a doubled square for
+ * restore), while the antd "fullscreen" icons are corner brackets — a different
+ * shape that reads as fullscreen, not maximize. Matching the real metric keeps
+ * the custom title bar consistent with every other Windows window.
+ */
+const WIN_ICON = { width: 10, height: 10, viewBox: '0 0 10 10', fill: 'none' } as const
+
+/** Minimize: a single hairline at the vertical centre. */
+function MinimizeGlyph(): JSX.Element {
+  return <svg {...WIN_ICON}><path d="M0 5.5h10" stroke="currentColor" strokeWidth={1} /></svg>
+}
+
+/** Maximize: a 1px-stroke square inset by half a pixel so it stays crisp. */
+function MaximizeGlyph(): JSX.Element {
+  return <svg {...WIN_ICON}><rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" strokeWidth={1} /></svg>
+}
+
+/** Restore: the doubled-square Windows uses when maximized. */
+function RestoreGlyph(): JSX.Element {
+  return (
+    <svg {...WIN_ICON}>
+      <path d="M2.5 2.5v-2h7v7h-2" stroke="currentColor" strokeWidth={1} fill="none" />
+      <rect x="0.5" y="2.5" width="7" height="7" stroke="currentColor" strokeWidth={1} />
+    </svg>
+  )
+}
+
+/** Close: the standard X, sized to the same box. */
+function CloseGlyph(): JSX.Element {
+  return <svg {...WIN_ICON}><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" stroke="currentColor" strokeWidth={1} /></svg>
+}
+
 /** Frameless title-bar window controls (minimize / maximize-restore / close). */
 function WindowControls({ maximized }: { maximized: boolean }): JSX.Element {
   return (
     <div style={{ display: 'flex', alignItems: 'center', WebkitAppRegion: 'no-drag', height: '100%' } as CSSProperties}>
       <WindowButton label="Minimize" onClick={() => void window.api.window.minimize()}>
-        <MinusOutlined />
+        <MinimizeGlyph />
       </WindowButton>
       <WindowButton label={maximized ? 'Restore' : 'Maximize'} onClick={() => void window.api.window.toggleMaximize()}>
-        {maximized ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+        {maximized ? <RestoreGlyph /> : <MaximizeGlyph />}
       </WindowButton>
       <WindowButton label="Close" danger onClick={() => void window.api.window.close()}>
-        <CloseOutlined />
+        <CloseGlyph />
       </WindowButton>
     </div>
   )

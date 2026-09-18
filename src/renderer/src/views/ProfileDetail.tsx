@@ -3,8 +3,8 @@ import {
   Alert, Button, Input, List, Modal, Select, Space, Tag, theme, message,
 } from 'antd'
 import { FileTextOutlined } from '@ant-design/icons'
-import { DndContext, closestCenter, type DragEndEvent } from '@dnd-kit/core'
-import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
+import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useTranslation } from 'react-i18next'
 import { apiErrorText } from '../lib/ipc.ts'
@@ -55,6 +55,14 @@ export default function ProfileDetailView({ name, onChanged }: Props) {
   const [newRowDisabled, setNewRowDisabled] = useState(false)
   const [newRowConfig, setNewRowConfig] = useState('')
   const [newRowInsert, setNewRowInsert] = useState('')
+
+  // Require deliberate movement before a drag starts: without a constraint a
+  // press-and-release counted as a drag, so a stray click on the handle reordered
+  // the bundles.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
 
   const layerLabel = (layer: ProfileLayer): string => {
     if (layer.source === 'bundle') return t('profile.layer.bundle', { name: layer.bundle ?? '' })
@@ -206,7 +214,7 @@ const loadSeq = useRef(0)
     if (!result.ok) { void message.error(apiErrorText(result)); return }
     const { added, removed } = result.value
     if (added.length === 0 && removed.length === 0) void message.info(t('profile.detail.reconcileNoChange'))
-    else void message.success(t('profile.detail.reconcileDone', { added: added.join('、') || '—', removed: removed.join('、') || '—' }))
+    else void message.success(t('profile.detail.reconcileDone', { added: added.join(t('common.listSep')) || '—', removed: removed.join(t('common.listSep')) || '—' }))
     void load()
     onChanged?.()
   }
@@ -343,7 +351,7 @@ const loadSeq = useRef(0)
 
       <ScrollModal title={t('profile.detail.bundlesModal')} open={openBlock === 'bundles'} footer={null} width={MODAL.wide} onCancel={() => setOpenBlock(null)} bodyMax="md">
           {bundles.length === 0 ? <div style={{ color: token.colorTextTertiary }}>{t('common.none')}</div> : (
-            <DndContext collisionDetection={closestCenter} autoScroll={false} onDragEnd={onDragEnd}>
+            <DndContext sensors={sensors} collisionDetection={closestCenter} autoScroll={false} onDragEnd={onDragEnd}>
                 <SortableContext items={bundles} strategy={verticalListSortingStrategy}>
                   {bundles.map(bundle => (
                     <SortableBundle key={bundle} bundle={bundle} onRemove={removeBundleRow} />

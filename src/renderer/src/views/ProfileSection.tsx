@@ -1,6 +1,6 @@
 import { lazy, useCallback, useEffect, useState } from 'react'
 import {
-  Alert, Button, Checkbox, Modal, Segmented, Select, Space, Typography, theme, message,
+  Alert, Button, Checkbox, Modal, Segmented, Select, Space, Tag, Typography, theme, message,
 } from 'antd'
 import { CaretRightOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
@@ -61,15 +61,28 @@ export default function ProfileSection() {
   const [dshes, setDshes] = useState<{ id: string; name: string }[]>([])
   const [activeDshId, setActiveDshId] = useState<string>()
   const [activeDshVersion, setActiveDshVersion] = useState('')
+  /** The profile marked current (persisted per dsh), shown with a tag. */
+  const [currentProfile, setCurrentProfile] = useState<string | null>(null)
+
+  /** Read the persisted current profile for the active dsh. */
+  const loadCurrentProfile = useCallback(async (): Promise<void> => {
+    const r = await window.api.getActiveProfile()
+    setCurrentProfile(r.ok ? r.value : null)
+  }, [])
+
+  useEffect(() => { void loadCurrentProfile() }, [loadCurrentProfile])
 
   useEffect(() => {
     void (async () => {
       const r = await window.api.dsh.list()
-      if (r.ok) {
-        setDshes(r.value.dshes)
-        setActiveDshId(r.value.activeDshId)
-        setActiveDshVersion(r.value.dshes.find(d => d.id === r.value.activeDshId)?.version ?? '')
+      if (!r.ok) {
+        // Without this the DSH picker silently stays empty.
+        void message.error(apiErrorText(r))
+        return
       }
+      setDshes(r.value.dshes)
+      setActiveDshId(r.value.activeDshId)
+      setActiveDshVersion(r.value.dshes.find(d => d.id === r.value.activeDshId)?.version ?? '')
     })()
   }, [])
 
@@ -80,6 +93,7 @@ export default function ProfileSection() {
     if (!r.ok) { void message.error(apiErrorText(r)); return }
     setActiveDshId(id)
     setSelected(null) // 换 home 后旧选中的 profile 不再有效
+    await loadCurrentProfile() // 每个 DSH 有各自的当前 profile
     const l = await window.api.dsh.list()
     if (l.ok) setActiveDshVersion(l.value.dshes.find(d => d.id === l.value.activeDshId)?.version ?? '')
     void message.success(t('profile.switchedDsh', { name }))
@@ -95,11 +109,22 @@ export default function ProfileSection() {
 
   useEffect(() => { void refresh() }, [refresh])
 
+  // Default the detail pane to the profile marked current once the list is in,
+  // so opening this page lands on it instead of an empty pane.
+  useEffect(() => {
+    if (selected === null && currentProfile !== null && summaries.some(s => s.name === currentProfile)) {
+      setSelected(currentProfile)
+    }
+  }, [currentProfile, summaries, selected])
+
   useEffect(() => {
     if (selected === null) { setMissing([]); return }
     let alive = true
     void window.api.missingBundles(selected).then(result => {
-      if (result.ok && alive) setMissing(result.value)
+      if (!alive) return
+      if (result.ok) { setMissing(result.value); return }
+      // The warning would otherwise vanish with no explanation.
+      void message.error(apiErrorText(result))
     })
     return () => { alive = false }
   }, [selected])
@@ -148,7 +173,8 @@ export default function ProfileSection() {
   const doExportSave = async (name: string): Promise<void> => {
     if (name === '') return
     const lb = await window.api.localBundles(name)
-    if (!lb.ok) { void message.error(lb.error); return }
+    // apiErrorText, not the raw `.error`: the latter is a code like `name.invalid`.
+    if (!lb.ok) { void message.error(apiErrorText(lb)); return }
     const stream = async (zip: boolean): Promise<void> => {
       const res = await window.api.exportToFile(name, zip ? { zip: true } : undefined)
       if (!res.ok) { void message.error(apiErrorText(res)); return }
@@ -162,7 +188,7 @@ export default function ProfileSection() {
         <div>
           <div>{t('profile.export.zipPromptCount', { count: lb.value.length })}</div>
           <div style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', wordBreak: 'break-all', marginTop: 6 }}>
-            {lb.value.join('、')}
+            {lb.value.join(t('common.listSep'))}
           </div>
           <div style={{ color: token.colorTextSecondary, fontSize: token.fontSizeSM, marginTop: 8 }}>
             {t('profile.export.zipPromptHint')}
@@ -202,14 +228,38 @@ export default function ProfileSection() {
     })
   }
 
+  /** Persist a drag-reorder. Reorders the local list too: dnd-kit's transform
+   * is only a drag-time preview, so without this the rows snap back on release. */
+  const reorderProfiles = async (names: string[]): Promise<void> => {
+    const byName = new Map(summaries.map(s => [s.name, s]))
+    const next = names.map(n => byName.get(n)).filter((s): s is ProfileSummary => s !== undefined)
+    if (next.length === summaries.length) setSummaries(next)
+    const res = await window.api.reorderProfiles(names)
+    if (!res.ok) { void message.error(apiErrorText(res)); await refresh() }
+  }
+
+  /** Mark a profile as current for this dsh (persisted; drives the default view).
+   * Reached only from the menu: selecting a card just inspects the profile, so
+   * browsing the list can never silently change which one is current. */
+  const doSetCurrent = async (name: string): Promise<void> => {
+    if (name === currentProfile) return
+    const res = await window.api.setActiveProfile(name)
+    if (!res.ok) { void message.error(apiErrorText(res)); return }
+    setCurrentProfile(name)
+    void message.success(t('profile.setCurrentDone', { name }))
+  }
+
   const handleAction = (summary: ProfileSummary, key: string): void => {
-    if (key === 'clone') { setCloneTarget(summary.name); setCloneName('') }
+    if (key === 'setCurrent') void doSetCurrent(summary.name)
+    else if (key === 'clone') { setCloneTarget(summary.name); setCloneName('') }
     else if (key === 'migrate') { setMirrorTarget(summary.name) }
     else if (key === 'export') { void doExport(summary.name) }
     else if (key === 'delete') { void doDelete(summary.name) }
   }
 
   const actionsFor = (summary: ProfileSummary): MenuAction[] => [
+    // The current profile offers no redundant "set current" entry.
+    ...(summary.name === currentProfile ? [] : [{ key: 'setCurrent', label: t('profile.action.setCurrent') } as MenuAction]),
     { key: 'clone', label: t('profile.action.clone') },
     { key: 'migrate', label: t('profile.action.migrate') },
     { key: 'export', label: t('profile.action.export') },
@@ -294,9 +344,15 @@ export default function ProfileSection() {
                 keyOf={summary => summary.name}
                 selectedKey={selected ?? undefined}
                 onSelect={summary => setSelected(summary.name)}
-                renderTitle={summary => summary.name}
+                renderTitle={summary => (
+                  <Space size={6}>
+                    <span>{summary.name}</span>
+                    {summary.name === currentProfile && <Tag color="blue">{t('ext.current')}</Tag>}
+                  </Space>
+                )}
                 renderMeta={summary => t('profile.listMeta', { bundles: summary.bundles, plugins: summary.plugins, patch: summary.patchRows })}
                 actions={summary => <ConfirmMenu actions={actionsFor(summary)} onAction={key => handleAction(summary, key)} />}
+                onReorder={names => void reorderProfiles(names)}
                 loading={loading}
                 empty={
                   <EmptyState
@@ -379,7 +435,7 @@ export default function ProfileSection() {
                   type="warning"
                   showIcon
                   style={{ marginBottom: 16 }}
-                  title={t('profile.missingTitle', { list: missing.join('、') })}
+                  title={t('profile.missingTitle', { list: missing.join(t('common.listSep')) })}
                   description={t('profile.missingDesc', { profile: selected })}
                 />
               )}

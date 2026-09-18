@@ -4,6 +4,7 @@ node_modules/
 # Build output
 out/
 release/
+release-*/
 dist/
 
 # Test coverage output
@@ -12,6 +13,9 @@ coverage-report/
 
 # TypeScript incremental info
 *.tsbuildinfo
+
+# pnpm-generated local workspace settings (created on install)
+pnpm-workspace.yaml
 
 # Logs
 *.log

@@ -16,6 +16,9 @@ import { registerSettingsIpc } from './ipc/settings.ts'
 import { registerStoreIpc } from './ipc/store.ts'
 import { hookWindowMaximize, registerWindowIpc } from './ipc/window.ts'
 import { registerLogsIpc } from './ipc/logs.ts'
+import { registerMcpIpc } from './ipc/mcp.ts'
+import { registerSkillIpc } from './ipc/skill.ts'
+import { registerRuleIpc } from './ipc/rule.ts'
 import { child, initLogger, logger, printBanner } from './core/logger.ts'
 import { askOnCloseEnabled, closeToTrayEnabled, loadSettings, openDatabase, saveSettings } from './core/settings.ts'
 import { configureAppState, pluginDir } from './core/appState.ts'
@@ -311,6 +314,9 @@ function registerIpc(): void {
   registerSettingsIpc()
   registerWindowIpc()
   registerLogsIpc()
+  registerMcpIpc()
+  registerSkillIpc()
+  registerRuleIpc()
 }
 
 app.whenReady().then(async () => {

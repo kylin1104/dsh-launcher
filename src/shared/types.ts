@@ -110,6 +110,13 @@ export interface InstalledOverviewRow {
   /** True for a dsh-bundled template (used by a profile but not in the store):
    * shown as built-in, not a manageable plugin. */
   builtin?: boolean
+  /**
+   * Whether another version can be fetched for this plugin. False for a
+   * `local` source (installed from a folder, so there is no package to fetch)
+   * and for a bundled template — asking npm for those fails. Set by the
+   * overview builder once every source is known.
+   */
+  downloadable?: boolean
   /** Real on-disk bytes of this plugin's own files (inode-dedup across its archive
    * versions / profile copy). Absent when nothing resolved on disk. */
   sizeBytes?: number
@@ -517,4 +524,197 @@ export interface MarketListOpts {
   /** Category id to restrict to; empty/absent = all. */
   category?: string
   sort?: MarketSort
+}
+
+// ── MCP servers (dsh `@deepseek-ai/dsh-mcp-client` patch rows) ───────────────
+
+/**
+ * Which patch layer an MCP row was found in. dsh composes layers in this order
+ * and lets a later layer override an earlier one by row id:
+ *   bundles → profile → home → `--patch` overlays
+ * so `home` outranks `profile`. Kept explicit (not just a display string) so a
+ * toggle writes back into the very file the row came from.
+ */
+export type McpLayer = 'home' | 'profile'
+
+/** One configured MCP server, read from a dsh patch layer. */
+export interface McpServerRow {
+  /** Patch row id (the `- id:` value) — the write-back key. */
+  id: string
+  /** `serverName` from the row config — the model-facing namespace. */
+  serverName: string
+  /** Mounted plugin package name (normally `@deepseek-ai/dsh-mcp-client`). */
+  plugin: string
+  transport?: string
+  command?: string
+  args: string[]
+  url?: string
+  /** Which layer this row lives in — also where a toggle writes. */
+  layer: McpLayer
+  /** Profile name when `layer === 'profile'`. */
+  profile?: string
+  /** Absolute path of the patch file holding this row. */
+  file: string
+  /** Whether the row is disabled in its own layer. */
+  disabled: boolean
+  /**
+   * Set when ANOTHER block in the SAME file carries this id later, so dsh resolves
+   * that one instead and this block's own `disabled` is not what takes effect.
+   * Some writers disable a row by appending a fresh one rather than editing it, so
+   * the Launcher must not present the first block as the live state nor aim a
+   * toggle at it.
+   */
+  overriddenByLater?: boolean
+  /**
+   * Set when the HOME layer mounts the same `serverName`, so this profile row is
+   * overridden and never takes effect. Two different profiles never shadow each
+   * other — only one profile is loaded at a time.
+   */
+  shadowedBy?: { layer: McpLayer; profile?: string; id: string }
+}
+
+/** One patch layer file the scan touched. */
+export interface McpLayerFile {
+  layer: McpLayer
+  profile?: string
+  path: string
+  exists: boolean
+}
+
+/** Result of one MCP scan across the active dsh's layers. */
+export interface McpScanResult {
+  rows: McpServerRow[]
+  /** Patch files that were read, for display. */
+  files: McpLayerFile[]
+  /** True when the home layer file does not exist yet. */
+  homeMissing: boolean
+  /** The home layer's patch path — the target of a "create it" action. */
+  homePath: string
+  /** Profile names that actually have a patch file, for the profile picker. */
+  profiles: string[]
+  /** The active dsh's name + id, so the UI can label what it is showing. */
+  dsh: { id: string; name: string } | null
+  /** The profile the user marked as current for this dsh, when it still exists. */
+  activeProfile?: string
+  /**
+   * True when the home path was derived from a fallback (`$DSH_HOME` / `~/.dsh`)
+   * rather than a registered dsh. Creating the file there is unstable — picking
+   * a dsh later moves the real home — so the UI must not offer to create it.
+   */
+  homePathProvisional: boolean
+}
+
+/** A toggle target: which layer + file + row to flip. */
+export interface McpToggleTarget {
+  layer: McpLayer
+  profile?: string
+  id: string
+}
+
+/** One MCP server to create, as the add form collects it. */
+export interface McpAddInput {
+  /** Target layer: the shared (home) layer, or one profile's own layer. */
+  layer: McpLayer
+  profile?: string
+  /** Patch row id (the `- id:` value). Defaults to a slug of `serverName`. */
+  id?: string
+  serverName: string
+  transport: string
+  /** stdio only. */
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  /** http/sse only. */
+  url?: string
+  /** Create the row disabled instead of enabled. */
+  disabled?: boolean
+}
+
+/** Result of converting a Claude-format MCP config into dsh rows. */
+export interface McpImportPreview {
+  /** Rows that could be converted, ready to write. */
+  servers: McpAddInput[]
+  /** Entries that were skipped, with the reason (e.g. unsupported transport). */
+  skipped: { name: string; reason: string }[]
+  /** Set when the input could not be parsed at all. */
+  error?: string
+}
+
+// ── Skills (dsh `@deepseek-ai/dsh-skill-filesystem` roots) ───────────────────
+
+/**
+ * A skill discovery root, mirroring dsh's own `dsh-skill-filesystem` ranks.
+ * Lower rank wins WITHIN one layer; across layers dsh's "nearest layer wins"
+ * rule applies. `preset` is dsh's `custom` source (rank 300), contributed by an
+ * agent preset's `customSkillDirs`.
+ */
+/**
+ * Origin bucket for a skill contribution. These are dsh's OWN `Source` ids from
+ * `docs/subsystems/skills.md`, spelled the same way so the Launcher's labels
+ * match what dsh resolves. `custom` is `Config.customSkillDirs` (rank 300); a
+ * preset contributes through it, which is why the row also carries `origin`.
+ */
+export type SkillSource =
+  | 'project-dsh'
+  | 'project-agents'
+  | 'custom'
+  | 'user-dsh'
+  | 'user-agents'
+  | 'bundled'
+
+/** One discovered skill (a `<name>/SKILL.md` bundle, or a flat `<name>.md`). */
+export interface SkillRow {
+  name: string
+  /** Absolute path of the skill's directory (bundle) or file (flat). */
+  path: string
+  source: SkillSource
+  rank: number
+  /** Human-facing description from the frontmatter, when present. */
+  description?: string
+  /** True when the frontmatter sets `disable-model-invocation: true`. */
+  modelInvocable: boolean
+  /** Whose directory this came from when the source alone is ambiguous — the
+   * preset's name for `preset`, so the UI can say which preset ships it. */
+  origin?: string
+  /** Set when a nearer layer holds the same name — this row does not take effect. */
+  shadowedBy?: { name: string; source: SkillSource; rank: number; path: string; origin?: string }
+}
+
+/** One skill root that was scanned, with its rank + how many skills it yielded. */
+export interface SkillRootInfo {
+  source: SkillSource
+  rank: number
+  path: string
+  exists: boolean
+  count: number
+  /** The preset (or other owner) this root belongs to, when known. */
+  origin?: string
+}
+
+/** Result of one skill scan across every root dsh would read. */
+export interface SkillScanResult {
+  rows: SkillRow[]
+  roots: SkillRootInfo[]
+  /** Skills whose name is claimed by a nearer layer (not effective). */
+  shadowedCount: number
+}
+
+/**
+ * State of the active dsh's global instruction file (`$DSH_HOME/AGENTS.md`).
+ *
+ * dsh loads this one fixed filename for every session under the home and
+ * prepends it to each project's own instruction chain, so it is the only
+ * user-level config the Launcher can edit without a workspace path.
+ */
+export interface RuleFile {
+  path: string
+  exists: boolean
+  bytes?: number
+  /** ISO timestamp of the last write, when the file exists. */
+  modified?: string
+  /** dsh's per-file cap; a larger file is ignored entirely rather than truncated. */
+  sourceLimit: number
+  /** The preset default budget. A profile/home row may override it, so this is a
+   * reference figure for the usage hint, not a claim about the resolved value. */
+  budget: number
 }

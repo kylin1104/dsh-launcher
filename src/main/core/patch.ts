@@ -8,8 +8,11 @@
 
 import type { ClassifiedRow, PluginRow, RowCreateInput } from '../../shared/types.ts'
 
-/** Matches a `- id: xxx` row start (optionally quoted id). */
-const ID_RE = /^(\s*)- id:\s*'?([^'\s]+)'?\s*$/
+/** Matches a `- id: xxx` row start. Accepts a single- or double-quoted id, and a
+ * trailing `# comment`, because dsh's YAML does: a quoted id must not keep its
+ * quotes (or the row is invisible and a toggle appends a duplicate block), and a
+ * trailing comment must not hide the row. */
+const ID_RE = /^(\s*)- id:\s*(?:'([^']*)'|"([^"]*)"|([^'"\s#]+))/
 
 /** Whether a line is a top-level (column-0) `[]` empty-array marker. A nested
  * `[]` value (e.g. `  config: []`) is indented and is NOT treated as one. */
@@ -26,20 +29,111 @@ function stripEmptyArrayMarker(text: string): string {
   return text.split('\n').filter(line => !isTopLevelEmptyArray(line)).join('\n')
 }
 
-function findIdLine(lines: string[], id: string): number | undefined {
-  for (let i = 0; i < lines.length; i++) {
-    const m = ID_RE.exec(lines[i])
-    if (m !== null && m[2] === id) return i
-  }
-  return undefined
+/** The id a `- id:` line declares, or undefined when the line is not one. */
+function matchId(line: string): string | undefined {
+  const m = ID_RE.exec(line)
+  if (m === null) return undefined
+  // Group 2/3 are the quoted forms; group 4 is bare. Exactly one is set.
+  return m[2] ?? m[3] ?? m[4]
 }
 
-/** End (exclusive) of the block starting at `start` — the next `- ` row, or EOF. */
+/**
+ * Line index of the LAST block carrying `id` — the one dsh actually resolves.
+ *
+ * dsh composes patch layers by row id, so a later block overrides an earlier one.
+ * Every reader and writer targets this block: editing the FIRST instead made a
+ * toggle silently do nothing once another writer had appended an override row, and
+ * made a reader report a value dsh had already superseded (see {@link effectiveRow}).
+ */
+function findEffectiveIdLine(lines: string[], id: string): number | undefined {
+  let found: number | undefined
+  for (let i = 0; i < lines.length; i++) {
+    if (matchId(lines[i]) === id) found = i
+  }
+  return found
+}
+
+/** Leading whitespace width of a line. */
+function indentOf(line: string): number {
+  return /^(\s*)/.exec(line)?.[1].length ?? 0
+}
+
+/**
+ * The block's OWN key lines: those deeper than the row's `- id:` line and at the
+ * shallowest such indent.
+ *
+ * Two things must be excluded, and both are indentation:
+ *   - a nested mapping's keys (`config:` → `opts:` → `disabled:`), and
+ *   - a PARENT block's keys when this row is nested inside its `insert:` list —
+ *     the parent's `disabled:` sits at a SHALLOWER indent than this row's id.
+ * Deeper-than-the-id is the correct bound: a row's own keys are its immediate
+ * children, always indented past its `- id:`; everything else belongs elsewhere.
+ */
+function ownKeyLines(lines: string[], start: number, end: number): string[] {
+  const idIndent = indentOf(lines[start] ?? '')
+  const content = lines.slice(start + 1, end)
+    .filter(line => line.trim() !== '' && !line.trim().startsWith('#'))
+    .filter(line => indentOf(line) > idIndent)
+  const own: string[] = []
+  let min: number | undefined
+  for (const line of content) {
+    const indent = indentOf(line)
+    if (min === undefined || indent < min) { min = indent; own.length = 0 }
+    if (indent === min) own.push(line)
+  }
+  return own
+}
+
+/** Read `key: <value>` from a set of candidate lines (last write wins). */
+function readKey(lines: string[], key: string): string | undefined {
+  let found: string | undefined
+  const re = new RegExp(`^\\s*${key}:\\s*(.*)$`)
+  for (const line of lines) {
+    const m = re.exec(line)
+    if (m !== null) found = m[1]
+  }
+  return found
+}
+
+/**
+ * Whether an EARLIER block for `id` leaves `disabled: true` in force.
+ *
+ * Used when enabling a row by deleting its `disabled:` line: an omitted field is
+ * inherited from earlier blocks, so a `true` stated before this block would come
+ * back and the row would stay disabled. Scans the blocks before `beforeIndex`
+ * with the same inherit rule {@link effectiveRow} uses.
+ */
+function earlierBlockDisables(lines: string[], beforeIndex: number, id: string): boolean {
+  let disabled = false
+  for (let i = 0; i < beforeIndex; i++) {
+    if (matchId(lines[i]) !== id) continue
+    // Read the LAST `disabled:` in the block, like parseNamedRows: a nested
+    // lookalike inside `config:` must not shadow the row's own key.
+    const end = Math.min(blockEnd(lines, i), beforeIndex)
+    for (let j = i + 1; j < end; j++) {
+      const d = /^\s*disabled:\s*(true|false)/.exec(lines[j])
+      if (d !== null) disabled = d[1] === 'true'
+    }
+  }
+  return disabled
+}
+
+/**
+ * End (exclusive) of the block starting at `start` — the next row, or EOF.
+ *
+ * A `- ` line ends the block ONLY when it is indented no deeper than this block's
+ * own `- id:` line. Treating every `- ` as a new row truncated the block at a
+ * block-style sequence nested in `config:` (`args:\n  - x`), which hid the row's
+ * own `disabled:` — so a disabled server read as enabled, `verifyDisabledState`
+ * confirmed that false state, and writing `disabled: true` produced a duplicate
+ * key (invalid YAML that fails dsh's boot).
+ */
 function blockEnd(lines: string[], start: number): number {
+  const base = indentOf(lines[start] ?? '')
   for (let i = start + 1; i < lines.length; i++) {
     const line = lines[i]
     if (line.trim() === '' || line.trim().startsWith('#')) continue
-    if (/^\s*- /.test(line)) return i
+    if (/^\s*- /.test(line) && indentOf(line) <= base) return i
   }
   return lines.length
 }
@@ -49,18 +143,12 @@ export function parsePatchRows(text: string): PluginRow[] {
   const lines = text.split('\n')
   const rows: PluginRow[] = []
   for (let i = 0; i < lines.length; i++) {
-    const m = ID_RE.exec(lines[i])
-    if (m === null) continue
-    const end = blockEnd(lines, i)
-    let disabled = false
-    for (let j = i + 1; j < end; j++) {
-      const d = /\bdisabled:\s*(true|false)/.exec(lines[j])
-      if (d !== null) {
-        disabled = d[1] === 'true'
-        break
-      }
-    }
-    rows.push({ id: m[2], disabled })
+    const id = matchId(lines[i])
+    if (id === undefined) continue
+    // The row's OWN key lines only: a nested `disabled:` inside `config:` is not
+    // the row's state. All three parsers share this helper so they cannot disagree.
+    const own = ownKeyLines(lines, i, blockEnd(lines, i))
+    rows.push({ id, disabled: readBool(own, 'disabled') === true })
   }
   return rows
 }
@@ -70,6 +158,58 @@ export interface NamedRow {
   id: string
   name?: string
   disabled: boolean
+  /** Whether THIS block actually wrote a `disabled:` line (see {@link effectiveRow}). */
+  disabledExplicit?: boolean
+}
+
+/**
+ * The row that actually decides an id's state: the LAST block carrying it, with
+ * any field it omits INHERITED from the blocks before it.
+ *
+ * dsh composes patch layers by row id, and a later row for the same id overrides
+ * an earlier one. A field the later row omits is inherited rather than reset, so
+ * the last EXPLICIT setting wins — measured against `dsh --dump-config`:
+ *
+ *   block 1: disabled: true
+ *   block 2: (no disabled)        -> effective true
+ *   block 3: disabled: false      -> effective false
+ *
+ * A block that declares a `name:` different from the row's resolved name is
+ * SKIPPED ENTIRELY — dsh's `applyEntryPatches` treats the name as an assertion
+ * (`if (name && name !== target.name) continue`) and applies none of its fields,
+ * so it must not contribute to inheritance either:
+ *
+ *   block 1: name: '@pkg/A', disabled: true
+ *   block 2: name: '@pkg/B'          -> dsh resolves name '@pkg/B', ENABLED
+ *   (an earlier name-only match is not visible here; see the tests)
+ *
+ * Another writer may express "disable" by APPENDING a fresh `- id:` row instead
+ * of editing the original, leaving the file with two blocks for one id. Reading
+ * only the first block then reports the opposite of what dsh does, and writing to
+ * it changes nothing.
+ */
+export function effectiveRow(text: string, id: string): NamedRow | undefined {
+  let found: NamedRow | undefined
+  for (const row of parseNamedRows(text)) {
+    if (row.id !== id) continue
+    // dsh asserts the name: a block naming a DIFFERENT package is skipped whole.
+    if (row.name !== undefined && found?.name !== undefined && row.name !== found.name) continue
+    found = {
+      id: row.id,
+      ...(row.name !== undefined ? { name: row.name } : (found?.name !== undefined ? { name: found.name } : {})),
+      // Inherit: a block that states nothing leaves the previous value in place.
+      disabled: row.disabledExplicit ? row.disabled : (found?.disabled ?? false),
+    }
+  }
+  return found
+}
+
+/** Read a boolean `key: true|false` from candidate lines (last write wins). */
+function readBool(lines: string[], key: string): boolean | undefined {
+  const raw = readKey(lines, key)
+  if (raw === undefined) return undefined
+  const v = raw.trim()
+  return v === 'true' ? true : v === 'false' ? false : undefined
 }
 
 /** Parse rows including each block's `name:` (for bundle-built plugin rows). */
@@ -77,30 +217,36 @@ export function parseNamedRows(text: string): NamedRow[] {
   const lines = text.split('\n')
   const rows: NamedRow[] = []
   for (let i = 0; i < lines.length; i++) {
-    const m = ID_RE.exec(lines[i])
-    if (m === null) continue
-    const end = blockEnd(lines, i)
-    let name: string | undefined
-    let disabled = false
-    for (let j = i + 1; j < end; j++) {
-      const n = /\bname:\s*['"]?([^'"]+)['"]?\s*$/.exec(lines[j])
-      if (n !== null) name = n[1]
-      const d = /\bdisabled:\s*(true|false)/.exec(lines[j])
-      if (d !== null) disabled = d[1] === 'true'
-    }
-    rows.push({ id: m[2], name, disabled })
+    const id = matchId(lines[i])
+    if (id === undefined) continue
+    const own = ownKeyLines(lines, i, blockEnd(lines, i))
+    const name = unquoteYamlScalar(readKey(own, 'name'))
+    const explicit = own.some(line => /^\s*disabled\s*:/.test(line))
+    rows.push({ id, name, disabled: readBool(own, 'disabled') === true, disabledExplicit: explicit })
   }
   return rows
+}
+
+/** Strip one layer of YAML quotes from a scalar, if present. */
+function unquoteYamlScalar(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined
+  const v = raw.trim()
+  const m = /^'([^']*)'$/.exec(v) ?? /^"([^"]*)"$/.exec(v)
+  return m !== null ? m[1] : v
 }
 
 /**
  * Return a new `cordis.patch.yml` text with the named row's disabled state set.
  * Preserves all untouched lines. Idempotent: setting the same value is a no-op.
+ *
+ * Targets the LAST block carrying the id (the one dsh resolves): when another
+ * writer appended an override row, editing the first block would leave the
+ * effective state unchanged — a toggle that silently does nothing.
  */
 export function setRowDisabled(text: string, id: string, disabled: boolean): string {
   text = stripEmptyArrayMarker(text)
   const lines = text.split('\n')
-  const idIndex = findIdLine(lines, id)
+  const idIndex = findEffectiveIdLine(lines, id)
 
   // ── no row yet: append a fresh block ────────────────────────────────
   if (idIndex === undefined) {
@@ -115,10 +261,12 @@ export function setRowDisabled(text: string, id: string, disabled: boolean): str
   const end = blockEnd(lines, idIndex)
   const indent = /^(\s*)/.exec(lines[idIndex])?.[1] ?? ''
 
-  // Locate an existing `disabled:` line inside the block.
+  // Locate the block's OWN `disabled:` line. A nested lookalike (config.opts.
+  // disabled) must not be mistaken for it, or the edit lands inside `config:`.
+  const own = new Set(ownKeyLines(lines, idIndex, end))
   let disabledLine = -1
   for (let j = idIndex + 1; j < end; j++) {
-    if (/^\s*disabled:/.test(lines[j])) {
+    if (own.has(lines[j]) && /^\s*disabled:/.test(lines[j])) {
       disabledLine = j
       break
     }
@@ -132,42 +280,69 @@ export function setRowDisabled(text: string, id: string, disabled: boolean): str
       lines.splice(idIndex + 1, 0, `${indent}  disabled: true`)
     }
   } else {
-    if (disabledLine >= 0) {
-      lines.splice(disabledLine, 1)
-      // If the block now holds nothing but comments/blank lines, drop the id row too.
-      const newEnd = blockEnd(lines, idIndex)
-      const bodyOnlyComments = lines.slice(idIndex + 1, newEnd).every(
-        line => line.trim() === '' || line.trim().startsWith('#'),
-      )
-      if (bodyOnlyComments) lines.splice(idIndex, 1)
+    // Enabling. Only work is needed when the effective state is actually disabled:
+    //   - `disabled: true`  → flip it
+    //   - absent            → enabled UNLESS an earlier block states `true`, which
+    //     this block inherits; then an explicit `false` must be written, or the
+    //     toggle would silently do nothing.
+    //   - `disabled: false` → already enabled and explicitly stated, leave it
+    // Unconditionally splicing the line (the previous behaviour) rewrote rows
+    // that were already enabled, and dropped a trailing `disabled: false` that
+    // the user had written deliberately.
+    if (disabledLine >= 0 && /^\s*disabled:\s*true\s*$/.test(lines[disabledLine])) {
+      // Removing the line normally restores the default-enabled shape. But when
+      // an EARLIER block for this id also states `disabled: true`, the omission
+      // would inherit that `true` and the row would stay disabled — so write an
+      // explicit `false` in that case instead of deleting.
+      const inherited = earlierBlockDisables(lines, idIndex, id)
+      if (inherited) {
+        const dIndent = /^(\s*)/.exec(lines[disabledLine])?.[1] ?? ''
+        lines[disabledLine] = `${dIndent}disabled: false`
+      } else {
+        lines.splice(disabledLine, 1)
+        // If the block now holds nothing but comments/blank lines, drop the id row too.
+        const newEnd = blockEnd(lines, idIndex)
+        const bodyOnlyComments = lines.slice(idIndex + 1, newEnd).every(
+          line => line.trim() === '' || line.trim().startsWith('#'),
+        )
+        if (bodyOnlyComments) lines.splice(idIndex, 1)
+      }
+    } else if (disabledLine < 0 && earlierBlockDisables(lines, idIndex, id)) {
+      // This block states nothing, so it INHERITS `true` from an earlier one and
+      // the row is effectively disabled. Deleting is not an option (there is no
+      // line here), so state the enabled value explicitly — otherwise enabling
+      // would be a silent no-op.
+      lines.splice(idIndex + 1, 0, `${indent}  disabled: false`)
     }
-    // else: no disabled line to remove — id already present and enabled.
   }
+
+  // A patch file must remain a top-level YAML array: dsh's `parsePatchList` throws
+  // on `yaml.load('')` ("must be a top-level YAML array"), bricking the layer at
+  // boot. Dropping the last row's id line can empty the document, so fall back to
+  // the empty-array marker the create template uses.
+  if (lines.every(line => line.trim() === '')) return EMPTY_PATCH
 
   return lines.join('\n')
 }
+
+/** The canonical empty patch layer: a top-level empty array. */
+const EMPTY_PATCH = '[]\n'
 
 /** Parse every patch row, classifying each block's shape (name/disabled/config/insert). */
 export function parseClassifiedRows(text: string): ClassifiedRow[] {
   const lines = text.split('\n')
   const rows: ClassifiedRow[] = []
   for (let i = 0; i < lines.length; i++) {
-    const m = ID_RE.exec(lines[i])
-    if (m === null) continue
-    const end = blockEnd(lines, i)
-    let name: string | undefined
-    let disabled = false
-    let hasConfig = false
-    let hasInsert = false
-    for (let j = i + 1; j < end; j++) {
-      const line = lines[j]
-      const n = /\bname:\s*['"]?([^'"]+)['"]?\s*$/.exec(line)
-      if (n !== null) name = n[1]
-      if (/\bdisabled:\s*true/.test(line)) disabled = true
-      if (/^\s*config\s*:/.test(line)) hasConfig = true
-      if (/^\s*insert\s*:/.test(line)) hasInsert = true
-    }
-    rows.push({ id: m[2], name, disabled, hasConfig, hasInsert })
+    const id = matchId(lines[i])
+    if (id === undefined) continue
+    const own = ownKeyLines(lines, i, blockEnd(lines, i))
+    rows.push({
+      id,
+      name: unquoteYamlScalar(readKey(own, 'name')),
+      disabled: readBool(own, 'disabled') === true,
+      hasConfig: own.some(line => /^\s*config\s*:/.test(line)),
+      hasInsert: own.some(line => /^\s*insert\s*:/.test(line)),
+    })
   }
   return rows
 }
@@ -221,7 +396,7 @@ function appendKey(lines: string[], idIndex: number, render: (indent: string) =>
 export function setRowConfig(text: string, id: string, configText: string): string {
   text = stripEmptyArrayMarker(text)
   const lines = text.split('\n')
-  const idIndex = findIdLine(lines, id)
+  const idIndex = findEffectiveIdLine(lines, id)
   if (idIndex === undefined) throw new Error(`row "${id}" not found`)
   const render = (indent: string): string[] => renderConfig(indent, configText)
   if (!replaceKey(lines, idIndex, 'config', render)) appendKey(lines, idIndex, render)
@@ -235,7 +410,7 @@ export function setRowInsert(text: string, id: string, insertItems: string[]): s
   text = stripEmptyArrayMarker(text)
   const items = insertItems.map(item => item.trim()).filter(item => item !== '')
   const lines = text.split('\n')
-  const idIndex = findIdLine(lines, id)
+  const idIndex = findEffectiveIdLine(lines, id)
   const render = (indent: string): string[] => renderInsert(indent, items)
   if (idIndex === undefined) {
     // No such row yet: append a fresh block at the end.
@@ -275,7 +450,7 @@ export function appendRowBlock(text: string, block: string): string {
 export function upsertRow(text: string, patch: RowCreateInput): string {
   text = stripEmptyArrayMarker(text)
   const lines = text.split('\n')
-  if (findIdLine(lines, patch.id) === undefined) {
+  if (findEffectiveIdLine(lines, patch.id) === undefined) {
     return appendRowBlock(text, buildRowBlock(patch))
   }
   let out = text
@@ -285,21 +460,29 @@ export function upsertRow(text: string, patch: RowCreateInput): string {
   return out
 }
 
-/** Remove one entire row block (`- id:` through the next row / EOF). A no-op
- * when the row does not exist. All other lines are preserved. */
+/** Remove every block for one id (`- id:` through the next row / EOF). A no-op
+ * when the id is absent. All other lines are preserved.
+ *
+ * ALL blocks go, not just the effective one: callers use this as "this row no
+ * longer exists" — `addMcpServer` replaces the row wholesale, `profile:removeRow`
+ * restores the bundle default. Removing only the last block would leave an
+ * earlier block behind, and dsh would still apply it. */
 export function removeRow(text: string, id: string): string {
   text = stripEmptyArrayMarker(text)
-  const lines = text.split('\n')
-  const idx = findIdLine(lines, id)
-  if (idx === undefined) return text
-  lines.splice(idx, blockEnd(lines, idx) - idx)
-  return lines.join('\n')
+  let lines = text.split('\n')
+  // Walk BACKWARD so a splice cannot invalidate the next index.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (matchId(lines[i]) !== id) continue
+    lines = [...lines.slice(0, i), ...lines.slice(blockEnd(lines, i))]
+  }
+  const joined = lines.join('\n')
+  return joined.trim() === '' ? EMPTY_PATCH : joined
 }
 
 /** Extract a row block's verbatim text (its `- id:` line + child keys). */
 export function extractRowBlock(text: string, id: string): string | undefined {
   const lines = text.split('\n')
-  const idx = findIdLine(lines, id)
+  const idx = findEffectiveIdLine(lines, id)
   if (idx === undefined) return undefined
   return lines.slice(idx, blockEnd(lines, idx)).join('\n')
 }
@@ -310,7 +493,7 @@ export function extractRowBlock(text: string, id: string): string | undefined {
  * `undefined` when the row or key is absent. */
 export function extractKeyValue(text: string, id: string, key: string): string | undefined {
   const lines = text.split('\n')
-  const idx = findIdLine(lines, id)
+  const idx = findEffectiveIdLine(lines, id)
   if (idx === undefined) return undefined
   const end = blockEnd(lines, idx)
   const head = new RegExp(`^\\s*${key}\\s*:\\s*(.*)$`)

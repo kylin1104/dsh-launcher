@@ -78,6 +78,7 @@ export const E = {
   bundleNoRow: 'bundle.noRow',
   patchWriteVerify: 'patch.writeVerify',
   patchNothingToRemove: 'patch.nothingToRemove',
+  patchRowNotFound: 'patch.rowNotFound',
   // store / plugins
   storeNotConfigured: 'store.notConfigured',
   storeNotDir: 'store.notDir',
@@ -86,8 +87,20 @@ export const E = {
   storeInstallFailed: 'store.installFailed',
   storeOperationFailed: 'store.operationFailed',
   pluginNotInstalled: 'plugin.notInstalled',
+  /** The plugin has no fetchable package (installed from a folder, or a
+   * built-in dsh template), so no version list can be resolved for it. */
+  pluginNotDownloadable: 'plugin.notDownloadable',
   // market
   marketEntryNotFound: 'market.entryNotFound',
+  // mcp / skill
+  mcpRowNotFound: 'mcp.rowNotFound',
+  mcpLayerUnknown: 'mcp.layerUnknown',
+  mcpNoActiveDsh: 'mcp.noActiveDsh',
+  // rule (global instruction file)
+  ruleFileMissing: 'rule.fileMissing',
+  ruleEmpty: 'rule.empty',
+  ruleTooLarge: 'rule.tooLarge',
+  skillNotFound: 'skill.notFound',
   // dsh data import/export
   dataNotSelected: 'data.notSelected',
   // run

@@ -10,7 +10,7 @@ import {
 } from '../core/plugins.ts'
 import { listComboPlugins } from '../core/combo.ts'
 import {
-  cancelPluginDownload, cleanupPluginDownloads, listPluginDownloads, onDownloadsChange, startPluginDownload,
+  cancelPluginDownload, cleanupPluginDownloads, listPluginDownloads, onDownloadFinished, onDownloadsChange, startPluginDownload,
 } from '../core/pluginDownloads.ts'
 import { dshScopes, pluginDir, readDshState } from '../core/appState.ts'
 import { loadSettings, saveSettings } from '../core/settings.ts'
@@ -170,6 +170,12 @@ export function registerPluginsIpc(): void {
   handle('plugins:pkgVersions', async (_event, name: string): Promise<IpcResult<PackageVersionInfo>> => {
     try {
       if (pathIdentifierInvalid(name)) return fail(E.nameInvalid)
+      // A plugin with no fetchable package must be refused HERE too, not only by
+      // hiding the button: a `local` install came from a folder and a built-in
+      // template ships with the harness, so the registry lookup would fail with
+      // an opaque "internal error" (and a future caller could hit it again).
+      const row = buildInstalledOverview(dshScopes(), pluginDir()).find(r => r.name === name)
+      if (row !== undefined && row.downloadable !== true) return fail(E.pluginNotDownloadable, { name })
       return { ok: true, value: await fetchPackageVersions(name) }
     } catch (error) {
       return failFromError(error)
@@ -211,6 +217,10 @@ export function registerPluginsIpc(): void {
   // to data: URLs so they load in both dev (http) and packaged (file) renderers.
   handle('plugins:readme', (_event, name: string): IpcResult<{ content: string; dir: string }> => {
     try {
+      // `name` is joined into a path by findInstalledDir, so it needs the same
+      // guard every sibling handler applies — otherwise `../../..` reads a README
+      // from outside the store.
+      if (pathIdentifierInvalid(name)) return fail(E.nameInvalid)
       const scopes = dshScopes()
       const dir = findInstalledDir(scopes, pluginDir(), name)
       const raw = readPluginReadme(scopes, pluginDir(), name)
@@ -224,6 +234,8 @@ export function registerPluginsIpc(): void {
   // Reveal a plugin's install dir in the OS file explorer.
   handle('plugins:reveal', (_event, name: string): IpcResult<boolean> => {
     try {
+      // Same guard: without it `name` could open an arbitrary folder.
+      if (pathIdentifierInvalid(name)) return fail(E.nameInvalid)
       const scopes = dshScopes()
       const dir = findInstalledDir(scopes, pluginDir(), name)
       if (dir === undefined) return fail(E.pluginNotInstalled, { name })
@@ -274,6 +286,16 @@ export function registerPluginsIpc(): void {
   onDownloadsChange((list) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('download:change', list)
+    }
+  })
+
+  // A session reaching a terminal state is a separate, one-shot signal: the
+  // snapshot above carries live sessions only, so completion must be pushed on
+  // its own channel for the DSH / plugins views to refresh their lists when a
+  // background install lands.
+  onDownloadFinished((session) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('download:finished', session)
     }
   })
 }

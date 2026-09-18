@@ -105,9 +105,11 @@ export default function PluginsSection() {
     if (r.ok) setStoreMap(toStoreMap(r.value))
   }, [])
 
-  // When any download session settles, refresh the in-store tags (a finished
+  // When a download session settles, refresh the in-store tags (a finished
   // download flips the plugin to "in store" without needing a manual reload).
-  useEffect(() => window.api.downloads.onChange(() => { void refreshStoreNames() }), [refreshStoreNames])
+  // Hooked to onFinished, not onChange: the live snapshot only carries running
+  // sessions, so refreshing on it would miss the completion entirely.
+  useEffect(() => window.api.downloads.onFinished(() => { void refreshStoreNames() }), [refreshStoreNames])
 
   useEffect(() => {
     void (async () => {
@@ -282,9 +284,17 @@ export default function PluginsSection() {
             rowKey="name"
             loading={overviewLoading}
             dataSource={filteredOverview}
-            pagination={{ pageSize: 20, showSizeChanger: true }}
+            pagination={{
+              defaultPageSize: 20,
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50, 100],
+            }}
             locale={{ emptyText: t('plugin.overview.empty') }}
             onRow={r => ({ onClick: () => setTarget(r), style: { cursor: 'pointer' } })}
+            // Tighter vertical rhythm than antd's default `small`: the overview
+            // is a dense list of one-line rows, and the stock padding left it
+            // looking airy. Horizontal padding is left alone.
+            styles={{ body: { cell: { paddingTop: 6, paddingBottom: 6 } } }}
             columns={[
               {
                 title: t('plugin.overview.colName'),
@@ -352,6 +362,28 @@ export default function PluginsSection() {
                 width: 80,
                 render: (_: unknown, r: InstalledOverviewRow) => (
                   <Button size="small" onClick={event => { event.stopPropagation(); setTarget(r) }}>{t('plugin.overview.view')}</Button>
+                ),
+              },
+              {
+                // Download ANOTHER version of an already-installed plugin — the
+                // version picker is the same one the download center uses, so a
+                // newer release lands in the store as an extra archived version.
+                // A plugin with no fetchable package gets no button: a built-in
+                // dsh template ships with the harness, and a `local` plugin was
+                // installed from a folder, so asking npm for either fails.
+                title: t('plugin.overview.colDownload'),
+                key: 'downloadVersion',
+                width: 120,
+                render: (_: unknown, r: InstalledOverviewRow) => (
+                  r.downloadable ? (
+                    <Button
+                      size="small"
+                      disabled={dirMissing}
+                      onClick={event => { event.stopPropagation(); setDlPkg(r.name) }}
+                    >
+                      {t('plugin.overview.downloadVersion')}
+                    </Button>
+                  ) : null
                 ),
               },
             ]}

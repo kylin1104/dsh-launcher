@@ -1,6 +1,6 @@
 {
   "name": "dsh-launcher",
-  "version": "0.2.0-beta4",
+  "version": "0.2.0-beta5",
   "description": "DSH Launcher — manage dsh profiles, plugins and runtimes",
   "main": "./out/main/index.js",
   "scripts": {
@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "e2e": "electron scripts/e2e-extensions.cjs --no-sandbox",
     "pack": "pnpm build && electron-builder --win",
     "pack:portable": "pnpm build && electron-builder --win portable",
     "pack:dir": "pnpm build && electron-builder --win dir"

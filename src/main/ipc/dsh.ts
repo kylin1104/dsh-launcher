@@ -11,7 +11,7 @@ import {
   resolveDshPackage, updateDsh, versionExists, type DshEntry,
 } from '../core/dsh.ts'
 import {
-  dshVersionDir, effectiveProfileDir, readDshState, writeDshState,
+  dshVersionDir, effectiveProfileDir, readDshState, reorderDshes, writeDshState,
 } from '../core/appState.ts'
 import { startDshDownload } from '../core/pluginDownloads.ts'
 import { loadSettings, saveSettings } from '../core/settings.ts'
@@ -185,6 +185,26 @@ export function registerDshIpc(): void {
     return error === '' ? { ok: true, value: true } : fail(E.shellOpenPath, { detail: error })
   })
 
+  // Reveal a dsh's DATA home in the OS file explorer (where sessions/profiles
+  // live). Distinct from `dsh:revealDir`, which opens the INSTALL directory.
+  handle('dsh:revealHome', async (_event, id: string): Promise<IpcResult<boolean>> => {
+    const { dshes } = readDshState()
+    const entry = dshes.find(d => d.id === id)
+    if (entry === undefined) return fail(E.dshNotFound)
+    const error = await shell.openPath(entry.home)
+    return error === '' ? { ok: true, value: true } : fail(E.shellOpenPath, { detail: error })
+  })
+
+  // Reveal the profiles directory that EFFECTIVELY applies to a dsh (its
+  // override, else `<home>/profiles`), resolved here from the entry.
+  handle('dsh:revealProfiles', async (_event, id: string): Promise<IpcResult<boolean>> => {
+    const { dshes } = readDshState()
+    const entry = dshes.find(d => d.id === id)
+    if (entry === undefined) return fail(E.dshNotFound)
+    const error = await shell.openPath(effectiveProfileDir(entry))
+    return error === '' ? { ok: true, value: true } : fail(E.shellOpenPath, { detail: error })
+  })
+
   handle('dsh:add', async (_event, path: string): Promise<IpcResult<DshEntry>> => {
     let entry: DshEntry
     try {
@@ -229,6 +249,16 @@ export function registerDshIpc(): void {
     if (d === undefined) return fail(E.dshNotFound)
     writeDshState(dshes, id)
     logger.info(`dsh activated: ${d.name}`)
+    return { ok: true, value: true }
+  })
+
+  // Persist a user-chosen list order (drag to reorder). The ids must be exactly
+  // the registered set — a partial or unknown list would silently drop or
+  // duplicate entries, so any mismatch is rejected rather than applied.
+  handle('dsh:reorder', (_event, ids: string[]): IpcResult<boolean> => {
+    if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string')) return fail(E.nameInvalid)
+    if (!reorderDshes(ids)) return fail(E.nameInvalid)
+    logger.info(`dsh reordered: ${readDshState().dshes.map(d => d.name).join(', ')}`)
     return { ok: true, value: true }
   })
 

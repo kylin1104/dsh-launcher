@@ -69,6 +69,13 @@ export default function SettingsSection() {
     return apiErrorText(res)
   }
 
+  /** Reveal one of the configured directories. The main process resolves the
+   * path from the kind, so the renderer never names a path to open. */
+  const revealDir = async (kind: 'version' | 'plugin'): Promise<void> => {
+    const r = await window.api.settings.revealDir(kind)
+    if (!r.ok) void message.error(apiErrorText(r))
+  }
+
   return (
     // Content (App.tsx) 是 flex:1 + overflow:hidden;这里占满其高度并自行滚动,
     // 否则窗口调小时设置内容会被裁剪而无法滚到。
@@ -178,6 +185,7 @@ export default function SettingsSection() {
             description={t('settings.dshVersionDir.desc')}
             value={versionDir}
             onSave={saveVersionDir}
+            onReveal={() => void revealDir('version')}
           />
           <div style={{ margin: '10px 0', borderTop: `1px solid ${token.colorSplit}` }} />
           <ConfigRow
@@ -185,6 +193,7 @@ export default function SettingsSection() {
             description={t('settings.pluginDir.desc')}
             value={pluginDir}
             onSave={savePluginDir}
+            onReveal={() => void revealDir('plugin')}
           />
         </Panel>
 

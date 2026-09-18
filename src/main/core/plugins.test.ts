@@ -288,6 +288,31 @@ describe('buildInstalledOverview', () => {
     expect(byName('old').sources).toEqual(['store'])
   })
 
+  it('marks only a fetchable source as downloadable', () => {
+    // A `local` plugin came from a folder and a built-in template ships with the
+    // harness — neither has a package to fetch, so offering a download for them
+    // produced a failing npm lookup.
+    seedVersion('gh', '1.0.0')
+    seedVersion('npmPkg', '2.0.0')
+    seedVersion('loc', '3.0.0')
+    seedVersion('old', '4.0.0')
+    writeFileSync(join(store(), '.pm-sources.json'), JSON.stringify({
+      'gh@1.0.0': 'github', 'npmPkg@2.0.0': 'npm', 'loc@3.0.0': 'local',
+    }))
+
+    const homeD = join(root, 'home-dl')
+    mkProfile(join(homeD, 'profiles'), 'p1', { dsh: { profile: { bundles: ['tplOnly'] } } })
+    mkPkg(join(homeD, 'profiles', 'p1', 'node_modules', 'tplOnly'), '9.9.9')
+
+    const rows = buildInstalledOverview([scope('d', homeD)], store())
+    const dl = (n: string): boolean | undefined => rows.find(r => r.name === n)?.downloadable
+    expect(dl('gh')).toBe(true)
+    expect(dl('npmPkg')).toBe(true)
+    expect(dl('old')).toBe(true) // store: archived, so its package is resolvable
+    expect(dl('loc')).toBe(false)
+    expect(dl('tplOnly')).toBe(false) // built-in template → sourced from `dsh`
+  })
+
   it('skips a profile with an unreadable manifest', () => {
     const homeD = join(root, 'home-d2')
     const base = join(homeD, 'profiles')

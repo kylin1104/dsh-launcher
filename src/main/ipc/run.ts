@@ -9,6 +9,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { existsExecutable, resolveLaunchEntry, type LaunchEntry } from '../core/dsh.ts'
 import { buildDshLaunch } from '../core/launch-spec.ts'
+import { createOutputDecoder } from '../core/output-decode.ts'
 import { nodeEnvironment } from '../core/node-env.ts'
 import { nodePreferenceValue } from '../core/settings.ts'
 import { activeDshEntry } from '../core/appState.ts'
@@ -203,8 +204,14 @@ export function registerRunIpc(): void {
         runLog = homeBanner
         broadcastRun({ type: 'output', line: homeBanner })
         const mirrorRun = dshRunTrace()
-        const onOutput = (data: Buffer): void => {
-          const line = data.toString('utf8')
+        // dsh writes UTF-8 but the Windows tools it spawns (cmd.exe, .cmd
+        // shims) write GBK; decode each stream with its own stateful decoder so
+        // the console stops rendering GBK bytes as mojibake. One per stream —
+        // their multi-byte tails must not be mixed.
+        const decodeOut = createOutputDecoder()
+        const decodeErr = createOutputDecoder()
+        const onOutput = (data: Buffer, decode: (chunk: Buffer) => string): void => {
+          const line = decode(data)
           if (mirrorRun) {
             const trimmed = line.trimEnd()
             if (trimmed !== '') dshRunLog.debug(trimmed)
@@ -213,8 +220,8 @@ export function registerRunIpc(): void {
           if (runLog.length > RUN_LOG_CAP) runLog = runLog.slice(-RUN_LOG_CAP)
           broadcastRun({ type: 'output', line })
         }
-        child.stdout?.on('data', onOutput)
-        child.stderr?.on('data', onOutput)
+        child.stdout?.on('data', data => onOutput(data, decodeOut))
+        child.stderr?.on('data', data => onOutput(data, decodeErr))
         child.on('error', (error) => {
           broadcastRun({ type: 'output', line: `[启动失败] ${error.message}\n` })
           finish(1, null)
